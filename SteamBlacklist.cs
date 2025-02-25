@@ -24,6 +24,7 @@ public class SteamBlacklist : BaseUnityPlugin
     internal static Harmony? Harmony { get; set; }
 
     internal ConfigEntry<bool> AllowBlockedFriends { get; private set; } = null!;
+    internal ConfigEntry<bool> IgnoreBlockedMembers { get; private set; } = null!;
 
     public Dictionary<ulong, bool> SteamJoinQueue { get; set; } = new Dictionary<ulong, bool>();
 
@@ -39,6 +40,12 @@ public class SteamBlacklist : BaseUnityPlugin
             "allowBlockedFriends",
             true,
             "Allows blocked players in your friends list"
+        );
+        IgnoreBlockedMembers = Config.Bind(
+            "General",
+            "ignoreBlockedMembers",
+            true,
+            "true: Join lobby if host is not blocked\nfalse: Join lobby if host and members aren't blocked"
         );
 
         Logger.LogInfo($"Loaded SteamBlacklist mod v{MyPluginInfo.PLUGIN_VERSION}");
@@ -203,6 +210,176 @@ public class SteamBlacklist : BaseUnityPlugin
             Logger.LogDebug(
                 $" << PlayerJoinPatch DENY {request.ClientNetworkId} {response.Reason}"
             );
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(GameNetworkManager), "LobbyDataIsJoinable")]
+    class JoinGamePatch
+    {
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Warning", "Harmony003")]
+        private static bool Prefix(Lobby lobby, ref bool __result)
+        {
+            string? message = null;
+
+            switch (lobby.Owner.Relationship)
+            {
+                case Relationship.Ignored:
+                    Logger.LogInfo(
+                        $"Lobby hosted by blocked player: {lobby.Owner.Name} ({lobby.Owner.Id})"
+                    );
+                    message = "Lobby is hosted by a blocked player!";
+                    break;
+                case Relationship.IgnoredFriend:
+                    if (!Instance.AllowBlockedFriends.Value)
+                        message = "Lobby is hosted by a blocked friend!";
+                    Logger.LogInfo(
+                        $"Lobby is hosted by a blocked friend: {lobby.Owner.Name} ({lobby.Owner.Id})"
+                    );
+                    break;
+                case Relationship.Friend:
+                    Logger.LogInfo($"Lobby host (Friend): {lobby.Owner.Name} ({lobby.Owner.Id})");
+                    break;
+                case Relationship.None:
+                    Logger.LogInfo($"Lobby host: {lobby.Owner.Name} ({lobby.Owner.Id})");
+                    break;
+                case Relationship.RequestInitiator:
+                    Logger.LogInfo($"Lobby host: {lobby.Owner.Name} ({lobby.Owner.Id})");
+                    Logger.LogInfo("You have sent them a friend request");
+                    break;
+                case Relationship.RequestRecipient:
+                    Logger.LogInfo($"Lobby host: {lobby.Owner.Name} ({lobby.Owner.Id})");
+                    Logger.LogInfo("They have sent you a friend request");
+                    break;
+                case Relationship.Blocked: // Blocked = Ignored; Ignored = Blocked
+                    Logger.LogInfo($"Lobby host: {lobby.Owner.Name} ({lobby.Owner.Id})");
+                    Logger.LogInfo("You have ignored their friend request");
+                    break;
+                default:
+                    Logger.LogInfo(
+                        $"Lobby host: {lobby.Owner.Name} ({lobby.Owner.Id}) [Relationship: {lobby.Owner.Relationship}]"
+                    );
+                    break;
+            }
+            if (message != null)
+            {
+                UnityEngine
+                    .Object.FindObjectOfType<MenuManager>()
+                    .SetLoadingScreen(isLoading: false, RoomEnter.YouBlockedMember, message);
+                __result = false;
+                return false;
+            }
+
+            foreach (Friend friend in lobby.Members)
+            {
+                if (SteamBlacklist.Instance.IgnoreBlockedMembers.Value)
+                    break;
+                if (friend.Id == lobby.Owner.Id)
+                    continue;
+
+                switch (friend.Relationship)
+                {
+                    case Relationship.Ignored:
+                        Logger.LogInfo(
+                            $"Lobby contains a blocked player: {friend.Name} ({friend.Id})"
+                        );
+                        message = "Lobby contains a blocked player!";
+                        break;
+                    case Relationship.IgnoredFriend:
+                        if (!Instance.AllowBlockedFriends.Value)
+                            message = "Lobby contains a blocked friend!";
+                        Logger.LogInfo(
+                            $"Lobby contains a blocked friend: {friend.Name} ({friend.Id})"
+                        );
+                        break;
+                    case Relationship.Friend:
+                        Logger.LogInfo($"Lobby member (Friend): {friend.Name} ({friend.Id})");
+                        break;
+                    case Relationship.None:
+                        Logger.LogInfo($"Lobby member: {friend.Name} ({friend.Id})");
+                        break;
+                    case Relationship.RequestInitiator:
+                        Logger.LogInfo($"Lobby member: {friend.Name} ({friend.Id})");
+                        Logger.LogInfo("You have sent them a friend request");
+                        break;
+                    case Relationship.RequestRecipient:
+                        Logger.LogInfo($"Lobby member: {friend.Name} ({friend.Id})");
+                        Logger.LogInfo("They have sent you a friend request");
+                        break;
+                    case Relationship.Blocked: // Blocked = Ignored; Ignored = Blocked
+                        Logger.LogInfo($"Lobby member: {friend.Name} ({friend.Id})");
+                        Logger.LogInfo("You have ignored their friend request");
+                        break;
+                    default:
+                        Logger.LogInfo(
+                            $"Lobby member: {friend.Name} ({friend.Id}) [Relationship: {friend.Relationship}]"
+                        );
+                        break;
+                }
+
+                if (message != null)
+                {
+                    UnityEngine
+                        .Object.FindObjectOfType<MenuManager>()
+                        .SetLoadingScreen(isLoading: false, RoomEnter.YouBlockedMember, message);
+                    __result = false;
+                    return false;
+                }
+            }
+
+            try
+            {
+                string data = lobby.GetData("vers");
+                if (data != GameNetworkManager.Instance.gameVersionNum.ToString())
+                {
+                    Logger.LogDebug(
+                        $" == Lobby join denied! Invalid version: '{data}' lobby id: '{lobby.Id}'"
+                    );
+                    UnityEngine
+                        .Object.FindObjectOfType<MenuManager>()
+                        .SetLoadingScreen(
+                            isLoading: false,
+                            RoomEnter.Error,
+                            $"Invalid version\nLobby: {data}\nClient: {GameNetworkManager.Instance.gameVersionNum}"
+                        );
+                    return false;
+                }
+
+                if (lobby.GetData("joinable") == "false")
+                {
+                    Logger.LogDebug(" == Lobby join denied! Host lobby is not joinable");
+                    UnityEngine
+                        .Object.FindObjectOfType<MenuManager>()
+                        .SetLoadingScreen(
+                            isLoading: false,
+                            RoomEnter.NotAllowed,
+                            "The server host has already landed their ship."
+                        );
+                    __result = false;
+                    return false;
+                }
+
+                if (lobby.MemberCount >= 4 || lobby.MemberCount < 1)
+                {
+                    Logger.LogDebug(
+                        $" == Lobby join denied! Invalid member count {lobby.MemberCount} lobby id: '{lobby.Id}'"
+                    );
+                    UnityEngine
+                        .Object.FindObjectOfType<MenuManager>()
+                        .SetLoadingScreen(isLoading: false, RoomEnter.Full, "The server is full!");
+                    __result = false;
+                    return false;
+                }
+
+                Logger.LogDebug($" == Lobby join accepted! Lobby id {lobby.Id} is OK");
+                __result = true;
+            }
+            catch (Exception e)
+            {
+                Logger.LogError($"Lobby join denied! Error: {e.StackTrace}");
+                __result = false;
+            }
+
             return false;
         }
     }
