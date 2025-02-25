@@ -1,16 +1,21 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading.Tasks;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using Dissonance;
 using HarmonyLib;
 using LobbyCompatibility.Attributes;
 using LobbyCompatibility.Enums;
 using Steamworks;
 using Steamworks.Data;
 using Unity.Netcode;
+using UnityEngine;
 using UnityEngine.UIElements.Collections;
+using Object = System.Object;
 
 namespace SteamBlacklist;
 
@@ -381,6 +386,172 @@ public class SteamBlacklist : BaseUnityPlugin
             }
 
             return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(SteamLobbyManager), "LoadServerList")]
+    public class LobbyListPatch
+    {
+        private static bool Prefix()
+        {
+            _Prefix();
+            return false;
+        }
+
+        private static async void _Prefix()
+        {
+            SteamLobbyManager lobbymanager =
+                UnityEngine.Object.FindObjectOfType<SteamLobbyManager>();
+            if (GameNetworkManager.Instance.waitingForLobbyDataRefresh)
+            {
+                return;
+            }
+            lobbymanager.refreshServerListTimer = 0f;
+            lobbymanager.serverListBlankText.text = "Loading server list...";
+            lobbymanager.currentLobbyList = null;
+            LobbySlot[] array = UnityEngine.Object.FindObjectsOfType<LobbySlot>();
+            foreach (LobbySlot slot in array)
+            {
+                UnityEngine.Object.Destroy(slot.gameObject);
+            }
+            SteamMatchmaking.LobbyList.WithMaxResults(20);
+            SteamMatchmaking.LobbyList.WithKeyValue("started", "0");
+            SteamMatchmaking.LobbyList.WithKeyValue(
+                "versNum",
+                GameNetworkManager.Instance.gameVersionNum.ToString()
+            );
+            SteamMatchmaking.LobbyList.WithSlotsAvailable(1);
+            switch (lobbymanager.sortByDistanceSetting)
+            {
+                case 0:
+                    SteamMatchmaking.LobbyList.FilterDistanceClose();
+                    break;
+                case 1:
+                    SteamMatchmaking.LobbyList.FilterDistanceFar();
+                    break;
+                case 2:
+                    SteamMatchmaking.LobbyList.FilterDistanceWorldwide();
+                    break;
+            }
+            lobbymanager.currentLobbyList = null;
+            int hidden = 0;
+            Debug.Log("Requested server list");
+            GameNetworkManager.Instance.waitingForLobbyDataRefresh = true;
+            SteamMatchmaking.LobbyList.WithSlotsAvailable(1);
+            LobbyQuery lobbyQuery = lobbymanager.sortByDistanceSetting switch
+            {
+                0 => SteamMatchmaking
+                    .LobbyList.FilterDistanceClose()
+                    .WithSlotsAvailable(1)
+                    .WithKeyValue("vers", GameNetworkManager.Instance.gameVersionNum.ToString()),
+                1 => SteamMatchmaking
+                    .LobbyList.FilterDistanceFar()
+                    .WithSlotsAvailable(1)
+                    .WithKeyValue("vers", GameNetworkManager.Instance.gameVersionNum.ToString()),
+                _ => SteamMatchmaking
+                    .LobbyList.FilterDistanceWorldwide()
+                    .WithSlotsAvailable(1)
+                    .WithKeyValue("vers", GameNetworkManager.Instance.gameVersionNum.ToString()),
+            };
+            if (!lobbymanager.sortWithChallengeMoons)
+            {
+                lobbyQuery = lobbyQuery.WithKeyValue("chal", "f");
+            }
+
+            lobbymanager.currentLobbyList = await (
+                (lobbymanager.serverTagInputField.text == string.Empty)
+                    ? lobbyQuery.WithKeyValue("tag", "none")
+                    : lobbyQuery.WithKeyValue(
+                        "tag",
+                        lobbymanager
+                            .serverTagInputField.text.Substring(
+                                0,
+                                Mathf.Min(19, lobbymanager.serverTagInputField.text.Length)
+                            )
+                            .ToLower()
+                    )
+            ).RequestAsync();
+
+            GameNetworkManager.Instance.waitingForLobbyDataRefresh = false;
+            if (lobbymanager.currentLobbyList != null)
+            {
+                if (lobbymanager.currentLobbyList.Length == 0)
+                {
+                    lobbymanager.serverListBlankText.text = "No available servers to join.";
+                }
+                else
+                {
+                    lobbymanager.serverListBlankText.text = "";
+                }
+                lobbymanager.lobbySlotPositionOffset = 0f;
+
+                foreach (Lobby lobby in lobbymanager.currentLobbyList)
+                {
+                    string lobbyName = lobby.GetData("name");
+                    if (lobbyName.Length == 0)
+                    {
+                        continue;
+                    }
+                    if (
+                        lobby.Owner.Relationship == Relationship.Ignored
+                        || (
+                            !SteamBlacklist.Instance.AllowBlockedFriends.Value
+                            && lobby.Owner.Relationship == Relationship.IgnoredFriend
+                        )
+                    )
+                    {
+                        Logger.LogInfo(
+                            $"Lobby hidden: '{lobbyName}' ({lobby.Id}) by '{lobby.Owner.Name}' ({lobby.Owner.Id}) [Blocked"
+                                + (
+                                    lobby.Owner.Relationship == Relationship.IgnoredFriend
+                                        ? " friend]"
+                                        : " host]"
+                                )
+                        );
+                        hidden++;
+                        continue;
+                    }
+
+                    GameObject original = (
+                        (lobby.GetData("chal") != "t")
+                            ? lobbymanager.LobbySlotPrefab
+                            : lobbymanager.LobbySlotPrefabChallenge
+                    );
+                    GameObject obj = UnityEngine.Object.Instantiate(
+                        original,
+                        lobbymanager.levelListContainer
+                    );
+                    obj.GetComponent<RectTransform>().anchoredPosition = new Vector2(
+                        0f,
+                        0f + lobbymanager.lobbySlotPositionOffset
+                    );
+                    lobbymanager.lobbySlotPositionOffset -= 42f;
+                    LobbySlot componentInChildren = obj.GetComponentInChildren<LobbySlot>();
+                    componentInChildren.LobbyName.text = lobbyName.Substring(
+                        0,
+                        Mathf.Min(lobbyName.Length, 40)
+                    );
+                    componentInChildren.playerCount.text = $"{lobby.MemberCount} / 4";
+                    componentInChildren.lobbyId = lobby.Id;
+                    componentInChildren.thisLobby = lobby;
+                }
+                if (hidden > 0)
+                    Logger.LogInfo(
+                        $"{hidden} "
+                            + (hidden == 1 ? "lobby was" : "lobbies were")
+                            + " hidden because you blocked "
+                            + (hidden == 1 ? "its host" : "their hosts")
+                    );
+                else if (hidden == lobbymanager.currentLobbyList.Length)
+                    lobbymanager.serverListBlankText.text =
+                        "No available servers to join (All servers are hosted by people you've blocked).";
+            }
+            else
+            {
+                Debug.Log("Lobby list is null after request.");
+                lobbymanager.serverListBlankText.text =
+                    "No available servers to join (Steam did not respond).";
+            }
         }
     }
 
