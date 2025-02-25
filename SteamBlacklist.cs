@@ -1,21 +1,21 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
-using Dissonance;
 using HarmonyLib;
 using LobbyCompatibility.Attributes;
 using LobbyCompatibility.Enums;
 using Steamworks;
-using Steamworks.Data;
+using TMPro;
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.UI;
 using UnityEngine.UIElements.Collections;
-using Object = System.Object;
+using Object = UnityEngine.Object;
 
 namespace SteamBlacklist;
 
@@ -60,7 +60,7 @@ public class SteamBlacklist : BaseUnityPlugin
     public class SteamPlayerJoinPatch
     {
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Warning", "Harmony003")]
-        private static bool Prefix(Lobby lobby, Friend friend)
+        private static bool Prefix(Steamworks.Data.Lobby lobby, Friend friend)
         {
             Logger.LogDebug(
                 $" >> SteamPlayerJoinPatch (SteamMatchmaking_OnLobbyMemberJoined) STEAM PLAYER JOINED {friend.Name} {friend.Id} {friend.Relationship}"
@@ -223,7 +223,7 @@ public class SteamBlacklist : BaseUnityPlugin
     class JoinGamePatch
     {
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Warning", "Harmony003")]
-        private static bool Prefix(Lobby lobby, ref bool __result)
+        private static bool Prefix(Steamworks.Data.Lobby lobby, ref bool __result)
         {
             string? message = null;
 
@@ -389,169 +389,77 @@ public class SteamBlacklist : BaseUnityPlugin
         }
     }
 
-    [HarmonyPatch(typeof(SteamLobbyManager), "LoadServerList")]
     public class LobbyListPatch
     {
-        private static bool Prefix()
+        [HarmonyPatch(typeof(LobbySlot), "Awake")]
+        public static void Postfix(LobbySlot __instance)
         {
-            _Prefix();
-            return false;
+            if (__instance != null)
+            {
+                __instance.StartCoroutine(MarkLobbySlot(__instance));
+            }
         }
 
-        private static async void _Prefix()
+        private static IEnumerator MarkLobbySlot(LobbySlot lobbySlot)
         {
-            SteamLobbyManager lobbymanager =
-                UnityEngine.Object.FindObjectOfType<SteamLobbyManager>();
-            if (GameNetworkManager.Instance.waitingForLobbyDataRefresh)
+            yield return new WaitForEndOfFrame();
+            string lobbyName = lobbySlot.thisLobby.GetData("name");
+            if (
+                lobbySlot.thisLobby.Owner.Relationship == Relationship.Ignored
+                || (
+                    !SteamBlacklist.Instance.AllowBlockedFriends.Value
+                    && lobbySlot.thisLobby.Owner.Relationship == Relationship.IgnoredFriend
+                )
+            )
             {
-                return;
-            }
-            lobbymanager.refreshServerListTimer = 0f;
-            lobbymanager.serverListBlankText.text = "Loading server list...";
-            lobbymanager.currentLobbyList = null;
-            LobbySlot[] array = UnityEngine.Object.FindObjectsOfType<LobbySlot>();
-            foreach (LobbySlot slot in array)
-            {
-                UnityEngine.Object.Destroy(slot.gameObject);
-            }
-            SteamMatchmaking.LobbyList.WithMaxResults(20);
-            SteamMatchmaking.LobbyList.WithKeyValue("started", "0");
-            SteamMatchmaking.LobbyList.WithKeyValue(
-                "versNum",
-                GameNetworkManager.Instance.gameVersionNum.ToString()
-            );
-            SteamMatchmaking.LobbyList.WithSlotsAvailable(1);
-            switch (lobbymanager.sortByDistanceSetting)
-            {
-                case 0:
-                    SteamMatchmaking.LobbyList.FilterDistanceClose();
-                    break;
-                case 1:
-                    SteamMatchmaking.LobbyList.FilterDistanceFar();
-                    break;
-                case 2:
-                    SteamMatchmaking.LobbyList.FilterDistanceWorldwide();
-                    break;
-            }
-            lobbymanager.currentLobbyList = null;
-            int hidden = 0;
-            Debug.Log("Requested server list");
-            GameNetworkManager.Instance.waitingForLobbyDataRefresh = true;
-            SteamMatchmaking.LobbyList.WithSlotsAvailable(1);
-            LobbyQuery lobbyQuery = lobbymanager.sortByDistanceSetting switch
-            {
-                0 => SteamMatchmaking
-                    .LobbyList.FilterDistanceClose()
-                    .WithSlotsAvailable(1)
-                    .WithKeyValue("vers", GameNetworkManager.Instance.gameVersionNum.ToString()),
-                1 => SteamMatchmaking
-                    .LobbyList.FilterDistanceFar()
-                    .WithSlotsAvailable(1)
-                    .WithKeyValue("vers", GameNetworkManager.Instance.gameVersionNum.ToString()),
-                _ => SteamMatchmaking
-                    .LobbyList.FilterDistanceWorldwide()
-                    .WithSlotsAvailable(1)
-                    .WithKeyValue("vers", GameNetworkManager.Instance.gameVersionNum.ToString()),
-            };
-            if (!lobbymanager.sortWithChallengeMoons)
-            {
-                lobbyQuery = lobbyQuery.WithKeyValue("chal", "f");
-            }
+                Transform outline = lobbySlot.transform.Find("Outline");
+                Image outlineImage = outline.GetComponent<Image>();
+                Transform joinButton = lobbySlot.transform.Find("JoinButton/SelectionHighlight");
+                Image joinButtonSelectionHighlight = joinButton.GetComponent<Image>();
+                outlineImage.color = GetColorFromRGBA(202, 181, 0, 255);
+                joinButtonSelectionHighlight.color = GetColorFromRGBA(255, 178, 0, 9);
 
-            lobbymanager.currentLobbyList = await (
-                (lobbymanager.serverTagInputField.text == string.Empty)
-                    ? lobbyQuery.WithKeyValue("tag", "none")
-                    : lobbyQuery.WithKeyValue(
-                        "tag",
-                        lobbymanager
-                            .serverTagInputField.text.Substring(
-                                0,
-                                Mathf.Min(19, lobbymanager.serverTagInputField.text.Length)
-                            )
-                            .ToLower()
-                    )
-            ).RequestAsync();
+                TextMeshProUGUI serverNameText = lobbySlot.LobbyName;
+                TextMeshProUGUI numPlayersText = lobbySlot.playerCount;
+                Color textColor = (serverNameText.color = GetColorFromRGBA(219, 181, 0, 255));
+                numPlayersText.color = textColor;
+                Image lobbySlotImage = lobbySlot.GetComponent<Image>();
+                lobbySlotImage.color = GetColorFromRGBA(77, 67, 0, 255);
 
-            GameNetworkManager.Instance.waitingForLobbyDataRefresh = false;
-            if (lobbymanager.currentLobbyList != null)
-            {
-                if (lobbymanager.currentLobbyList.Length == 0)
-                {
-                    lobbymanager.serverListBlankText.text = "No available servers to join.";
-                }
-                else
-                {
-                    lobbymanager.serverListBlankText.text = "";
-                }
-                lobbymanager.lobbySlotPositionOffset = 0f;
+                GameObject rectTransformGO = new GameObject("blocked", typeof(RectTransform));
+                RectTransform rectTransform = rectTransformGO.GetComponent<RectTransform>();
+                TextMeshProUGUI blockedText =
+                    rectTransform.gameObject.AddComponent<TextMeshProUGUI>();
+                blockedText.fontSize = 22f;
+                blockedText.text = "BLOCKED";
+                blockedText.alignment = TextAlignmentOptions.Midline;
+                blockedText.font = numPlayersText.font;
+                blockedText.color = GetColorFromRGBA(89, 89, 0, 255);
+                rectTransform.SetParent(lobbySlot.transform);
+                rectTransform.anchorMin = new Vector2(0f, 1f);
+                rectTransform.anchorMax = new Vector2(0f, 1f);
+                rectTransform.pivot = new Vector2(0f, 1f);
+                rectTransform.localScale = new Vector3(0.8497399f, 0.8497399f, 0.8497399f);
+                rectTransform.localPosition = new Vector3(130f, -10f, -7f);
+                rectTransform.sizeDelta = new Vector2(269f, 24f);
 
-                foreach (Lobby lobby in lobbymanager.currentLobbyList)
-                {
-                    string lobbyName = lobby.GetData("name");
-                    if (lobbyName.Length == 0)
-                    {
-                        continue;
-                    }
-                    if (
-                        lobby.Owner.Relationship == Relationship.Ignored
-                        || (
-                            !SteamBlacklist.Instance.AllowBlockedFriends.Value
-                            && lobby.Owner.Relationship == Relationship.IgnoredFriend
+                Logger.LogInfo(
+                    $"Lobby highlighted: '{lobbyName}' ({lobbySlot.thisLobby.Id}) by '{lobbySlot.thisLobby.Owner.Name}' ({lobbySlot.thisLobby.Owner.Id}) [Blocked"
+                        + (
+                            lobbySlot.thisLobby.Owner.Relationship == Relationship.IgnoredFriend
+                                ? " friend]"
+                                : " host]"
                         )
-                    )
-                    {
-                        Logger.LogInfo(
-                            $"Lobby hidden: '{lobbyName}' ({lobby.Id}) by '{lobby.Owner.Name}' ({lobby.Owner.Id}) [Blocked"
-                                + (
-                                    lobby.Owner.Relationship == Relationship.IgnoredFriend
-                                        ? " friend]"
-                                        : " host]"
-                                )
-                        );
-                        hidden++;
-                        continue;
-                    }
+                );
+            }
+        }
 
-                    GameObject original = (
-                        (lobby.GetData("chal") != "t")
-                            ? lobbymanager.LobbySlotPrefab
-                            : lobbymanager.LobbySlotPrefabChallenge
-                    );
-                    GameObject obj = UnityEngine.Object.Instantiate(
-                        original,
-                        lobbymanager.levelListContainer
-                    );
-                    obj.GetComponent<RectTransform>().anchoredPosition = new Vector2(
-                        0f,
-                        0f + lobbymanager.lobbySlotPositionOffset
-                    );
-                    lobbymanager.lobbySlotPositionOffset -= 42f;
-                    LobbySlot componentInChildren = obj.GetComponentInChildren<LobbySlot>();
-                    componentInChildren.LobbyName.text = lobbyName.Substring(
-                        0,
-                        Mathf.Min(lobbyName.Length, 40)
-                    );
-                    componentInChildren.playerCount.text = $"{lobby.MemberCount} / 4";
-                    componentInChildren.lobbyId = lobby.Id;
-                    componentInChildren.thisLobby = lobby;
-                }
-                if (hidden > 0)
-                    Logger.LogInfo(
-                        $"{hidden} "
-                            + (hidden == 1 ? "lobby was" : "lobbies were")
-                            + " hidden because you blocked "
-                            + (hidden == 1 ? "its host" : "their hosts")
-                    );
-                else if (hidden == lobbymanager.currentLobbyList.Length)
-                    lobbymanager.serverListBlankText.text =
-                        "No available servers to join (All servers are hosted by people you've blocked).";
-            }
-            else
-            {
-                Debug.Log("Lobby list is null after request.");
-                lobbymanager.serverListBlankText.text =
-                    "No available servers to join (Steam did not respond).";
-            }
+        private static Color GetColorFromRGBA(int r, int b, int g, int a)
+        {
+            //IL_0021: Unknown result type (might be due to invalid IL or missing references)
+            //IL_0026: Unknown result type (might be due to invalid IL or missing references)
+            //IL_0029: Unknown result type (might be due to invalid IL or missing references)
+            return new Color((float)r / 255f, (float)b / 255f, (float)g / 255f, (float)a / 255f);
         }
     }
 
