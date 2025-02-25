@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using BepInEx;
 using BepInEx.Configuration;
@@ -16,7 +15,7 @@ using UnityEngine.UIElements.Collections;
 namespace SteamBlacklist;
 
 [BepInPlugin(MyPluginInfo.PLUGIN_GUID, MyPluginInfo.PLUGIN_NAME, MyPluginInfo.PLUGIN_VERSION)]
-[BepInDependency("BMX.LobbyCompatibility", BepInDependency.DependencyFlags.HardDependency)]
+[BepInDependency("BMX.LobbyCompatibility")]
 [LobbyCompatibility(CompatibilityLevel.ServerOnly, VersionStrictness.None)]
 public class SteamBlacklist : BaseUnityPlugin
 {
@@ -26,7 +25,7 @@ public class SteamBlacklist : BaseUnityPlugin
 
     internal ConfigEntry<bool> AllowBlockedFriends { get; private set; } = null!;
 
-    public Dictionary<ulong, bool>? SteamJoinQueue { get; set; }
+    public Dictionary<ulong, bool> SteamJoinQueue { get; set; } = new Dictionary<ulong, bool>();
 
     private void Awake()
     {
@@ -45,12 +44,6 @@ public class SteamBlacklist : BaseUnityPlugin
         Logger.LogInfo($"Loaded SteamBlacklist mod v{MyPluginInfo.PLUGIN_VERSION}");
     }
 
-    [HarmonyPatch(typeof(GameNetworkManager), "StartHost")]
-    public class StartHostPatch
-    {
-        private static void Postfix() { }
-    }
-
     [HarmonyPatch(typeof(GameNetworkManager), "SteamMatchmaking_OnLobbyMemberJoined")]
     public class SteamPlayerJoinPatch
     {
@@ -63,7 +56,7 @@ public class SteamBlacklist : BaseUnityPlugin
             if (!GameNetworkManager.Instance.isHostingGame)
             {
                 Logger.LogDebug(
-                    $" << SteamPlayerJoinPatch NOT HOST, RETURNING {friend.Name} ({friend.Id}) [{friend.Relationship}]"
+                    $" << SteamPlayerJoinPatch NOT HOST {friend.Name} ({friend.Id}) [{friend.Relationship}]"
                 );
                 return true;
             }
@@ -76,10 +69,9 @@ public class SteamBlacklist : BaseUnityPlugin
                 return true;
             }
             if (GameNetworkManager.Instance.currentLobby.HasValue)
-                switch (friend.Relationship)
+                switch (friend.Relationship) // https://partner.steamgames.com/doc/api/ISteamFriends#EFriendRelationship
                 {
                     case Relationship.Ignored:
-                    case Relationship.Blocked:
                         Logger.LogInfo($"Blocked player rejected: {friend.Name} ({friend.Id})");
                         allow = false;
                         break;
@@ -101,6 +93,18 @@ public class SteamBlacklist : BaseUnityPlugin
                     case Relationship.None:
                         Logger.LogInfo($"Player joined: {friend.Name} ({friend.Id})");
                         break;
+                    case Relationship.RequestInitiator:
+                        Logger.LogInfo($"Player joined: {friend.Name} ({friend.Id})");
+                        Logger.LogInfo("You have sent them a friend request");
+                        break;
+                    case Relationship.RequestRecipient:
+                        Logger.LogInfo($"Player joined: {friend.Name} ({friend.Id})");
+                        Logger.LogInfo("They have sent you a friend request");
+                        break;
+                    case Relationship.Blocked: // Blocked = Ignored; Ignored = Blocked
+                        Logger.LogInfo($"Player joined: {friend.Name} ({friend.Id})");
+                        Logger.LogInfo("You have ignored their friend request");
+                        break;
                     default:
                         Logger.LogInfo(
                             $"Player joined: {friend.Name} ({friend.Id}) [Relationship: {friend.Relationship}]"
@@ -108,12 +112,13 @@ public class SteamBlacklist : BaseUnityPlugin
                         break;
                 }
 
-            Instance.SteamJoinQueue!.TryAdd(friend.Id, allow);
+            Instance.SteamJoinQueue.TryAdd(friend.Id, allow);
 
-            if (allow)
-                Logger.LogDebug($" << SteamPlayerJoinPatch ALLOW {friend.Name} {friend.Id}");
-            else
-                Logger.LogDebug($" << SteamPlayerJoinPatch DENY {friend.Name} {friend.Id}");
+            Logger.LogDebug(
+                " << SteamPlayerJoinPatch "
+                    + (allow ? "ALLOW" : "DENY")
+                    + $" {friend.Name} {friend.Id}"
+            );
             return true;
         }
     }
@@ -135,22 +140,20 @@ public class SteamBlacklist : BaseUnityPlugin
                 Logger.LogDebug($" << PlayerJoinPatch STEAM DISABLED");
                 return true;
             }
+
             if (request.ClientNetworkId == 0)
             {
                 Logger.LogDebug($" << PlayerJoinPatch HOST");
-                var c =
-                    SteamBlacklist.Instance.SteamJoinQueue == null
-                        ? -1
-                        : SteamBlacklist.Instance.SteamJoinQueue!.Count;
                 Logger.LogDebug(
-                    $" >> StartHostPatch (None) Resetting SteamJoinQueue (was {c} items)"
+                    $" >> StartHostPatch (None) Resetting SteamJoinQueue (was {SteamBlacklist.Instance.SteamJoinQueue.Count} items)"
                 );
-                SteamBlacklist.Instance.SteamJoinQueue = new Dictionary<ulong, bool>();
+                Instance.SteamJoinQueue.Clear();
                 Logger.LogDebug(
-                    $" << StartHostPatch RESET SteamJoinQueue! {SteamBlacklist.Instance.SteamJoinQueue!.Count}"
+                    $" << StartHostPatch RESET SteamJoinQueue {SteamBlacklist.Instance.SteamJoinQueue.Count}"
                 );
                 return true;
             }
+
             string[] payload;
             ulong id;
             try
@@ -164,11 +167,12 @@ public class SteamBlacklist : BaseUnityPlugin
                 Logger.LogDebug($"Received invalid approval request: {request.Payload}");
                 return false;
             }
+
             Logger.LogDebug($"Received approval request: {id}");
             bool? allow;
             try
             {
-                allow = Instance.SteamJoinQueue!.Get(id);
+                allow = Instance.SteamJoinQueue.Get(id);
             }
             catch (KeyNotFoundException)
             {
@@ -177,9 +181,12 @@ public class SteamBlacklist : BaseUnityPlugin
 
             if (allow.HasValue && allow.Value)
             {
+                Instance.SteamJoinQueue.Remove(id);
                 Logger.LogDebug(
                     $" << PlayerJoinPatch ALLOW {request.ClientNetworkId} {payload[1]}"
                 );
+                Logger.LogDebug($"Playing with {id} - notifying steam...");
+                SteamFriends.SetPlayedWith(id);
                 return true;
             }
 
@@ -192,7 +199,7 @@ public class SteamBlacklist : BaseUnityPlugin
             Logger.LogInfo(
                 $"Denied approval request: {id} - {response.Reason.Split(",")[0].Replace("!", "")}!"
             );
-            Instance.SteamJoinQueue!.Remove(id);
+            Instance.SteamJoinQueue.Remove(id);
             Logger.LogDebug(
                 $" << PlayerJoinPatch DENY {request.ClientNetworkId} {response.Reason}"
             );
