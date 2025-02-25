@@ -1,8 +1,8 @@
 {
   "name": "SteamBlacklist",
-  "version_number": "1.0.0",
+  "version_number": "1.1.0",
   "website_url": "https://github.com/baerchen201/LethalSteamBlacklist",
-  "description": "Use the steam block function as a blacklist",
+  "description": "Locks blocked steam users out of your lobby",
   "dependencies": [
     "BepInEx-BepInExPack-5.4.2100",
     "BMX-LobbyCompatibility-1.4.0"
