@@ -232,6 +232,7 @@ public class SteamBlacklist : BaseUnityPlugin
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Warning", "Harmony003")]
         private static bool Prefix(Lobby lobby, ref bool __result)
         {
+            lobby.Refresh();
             string? message = null;
 
             switch (lobby.Owner.Relationship)
@@ -516,9 +517,6 @@ public class SteamBlacklist : BaseUnityPlugin
                     continue;
                 }
 
-                if (SteamBlacklist.Instance.AddArtificialMenuDelay.Value)
-                    for (int i = 0; i < 10; i++)
-                        yield return null;
                 if (
                     lobby.Owner.Relationship == Relationship.Ignored
                     || (
@@ -538,6 +536,9 @@ public class SteamBlacklist : BaseUnityPlugin
                     hidden++;
                     continue;
                 }
+                else if (SteamBlacklist.Instance.AddArtificialMenuDelay.Value)
+                    for (int i = 0; i < 10; i++)
+                        yield return null;
 
                 GameObject original = (
                     (lobby.GetData("chal") != "t")
