@@ -2,26 +2,19 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Text;
-using System.Threading.Tasks;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
-using Dissonance;
 using HarmonyLib;
-using LobbyCompatibility.Attributes;
-using LobbyCompatibility.Enums;
 using Steamworks;
 using Steamworks.Data;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.UIElements.Collections;
-using Object = System.Object;
 
 namespace SteamBlacklist;
 
 [BepInPlugin(MyPluginInfo.PLUGIN_GUID, MyPluginInfo.PLUGIN_NAME, MyPluginInfo.PLUGIN_VERSION)]
-[BepInDependency("BMX.LobbyCompatibility")]
-[LobbyCompatibility(CompatibilityLevel.ServerOnly, VersionStrictness.None)]
 public class SteamBlacklist : BaseUnityPlugin
 {
     public static SteamBlacklist Instance { get; private set; } = null!;
