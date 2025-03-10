@@ -3,14 +3,17 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Text;
 using BepInEx;
+using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
 using Steamworks;
 using Steamworks.Data;
+using TMPro;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.UIElements.Collections;
+using Object = UnityEngine.Object;
 
 namespace SteamBlacklist;
 
@@ -26,6 +29,8 @@ public class SteamBlacklist : BaseUnityPlugin
     internal ConfigEntry<bool> AddArtificialMenuDelay { get; private set; } = null!;
 
     public Dictionary<ulong, bool> SteamJoinQueue { get; set; } = new Dictionary<ulong, bool>();
+
+    internal byte DisplayedIncompatibilityPopup = 0;
 
     private void Awake()
     {
@@ -54,6 +59,43 @@ public class SteamBlacklist : BaseUnityPlugin
         );
 
         Logger.LogInfo($"Loaded SteamBlacklist mod v{MyPluginInfo.PLUGIN_VERSION}");
+    }
+
+    [HarmonyPatch(typeof(MenuManager), nameof(MenuManager.Awake))]
+    public class CheckLobbyCompatibilityPatch
+    {
+        private static void Prefix(MenuManager __instance)
+        {
+            if (SteamBlacklist.Instance.DisplayedIncompatibilityPopup > 2)
+                return;
+            // stole this from https://github.com/mattymatty97/LTC_LobbyControl/blob/2eeec30/Plugin/src/PopUp/PopUpPatch.cs#L25
+            // and adapted it a bit to work here :)
+            foreach (PluginInfo plugin in Chainloader.PluginInfos.Values)
+            {
+                if (plugin.Metadata.GUID != "BMX.LobbyCompatibility")
+                    continue;
+
+                SteamBlacklist.Instance.DisplayedIncompatibilityPopup++;
+                if (SteamBlacklist.Instance.DisplayedIncompatibilityPopup == 1)
+                    return;
+
+                Logger.LogWarning(
+                    "LobbyCompatibility detected, please uninstall it as it is incompatible with SteamBlacklist"
+                );
+                var menuContainer = GameObject.Find("/Canvas/MenuContainer/");
+                var lanPopup = GameObject.Find("Canvas/MenuContainer/LANWarning/");
+                if (lanPopup == null)
+                    return;
+
+                var newPopup = Object.Instantiate(lanPopup, menuContainer.transform);
+                newPopup.name = "LOBBYCOMPATIBILITY_POPUP";
+                newPopup.SetActive(true);
+                var textHolder = newPopup.transform.Find("Panel/NotificationText");
+                var textMesh = textHolder.GetComponent<TextMeshProUGUI>();
+                textMesh.text =
+                    "LobbyCompatibility detected\nPlease uninstall it as it is incompatible with the SteamBlacklist mod";
+            }
+        }
     }
 
     [HarmonyPatch(typeof(GameNetworkManager), "SteamMatchmaking_OnLobbyMemberJoined")]
