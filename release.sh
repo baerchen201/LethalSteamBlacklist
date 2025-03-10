@@ -4,5 +4,5 @@ shopt -s extglob globstar
 
 dotnet build
 path=$(mktemp -u --suffix=.zip)
-zip $path icon.png manifest.json README.md bin/**/*.dll
+zip $path -j icon.png manifest.json README.md bin/**/*.dll
 echo "Zip created at $path"
